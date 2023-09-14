@@ -1,71 +1,74 @@
-import yfinance as yf
 import numpy as np
+import yfinance as yf
 import datetime
-import matplotlib.pyplot as plt
-from scipy import stats
 
-# Define the SPX index symbol
+bond_symbol = "^TNX"
+
+# Create a Ticker object for the Treasury bond
+bond_ticker = yf.Ticker(bond_symbol)
+
+# Get historical data for the Treasury bond
+bond_data = bond_ticker.history(period="1d")
+
+# Extract the most recent yield (interest rate) from the bond data
+risk_free_rate = bond_data["Close"].iloc[-1] / 100.0 
+
+# Define the symbol for the S&P 100 Index (XEO)
 symbol = "^XEO"
 
-# Fetch the options data for the SPX index
-spx = yf.Ticker(symbol)
+# Create a Ticker object
+ticker = yf.Ticker(symbol)
 
-# Get the expiration dates available for options up to 2024
-expiration_dates = spx.options
-expiration_dates = [date for date in expiration_dates if int(date.split("-")[0]) <= 2023]
+# Get key information about the index
+index_info = ticker.info
 
-print("Available expiration dates up to 2023:")
+# Extract the relevant parameters
+S = (index_info["bid"] + index_info["ask"]) / 2.0  # Average between bid and ask prices
+
+# Prompt the user to choose a European call option for XEO
+symbol = "^XEO"
+ticker = yf.Ticker(symbol)
+
+# Display available expiration dates for the options
+expiration_dates = ticker.options
+print("Available expiration dates:")
 for i, date in enumerate(expiration_dates):
-    print(f"{i + 1}: {date}")
+    print(f"{i + 1}. {date}")
 
-# Prompt the user to choose an expiration date
-expiration_choice = int(input("Choose an expiration date (enter the corresponding number): ")) - 1
-expiration_date = expiration_dates[expiration_choice]
+# Ask the user to select an expiration date
+expiration_choice = int(input("Select an expiration date (1, 2, 3, ...): ")) - 1
+chosen_expiration_date = expiration_dates[expiration_choice]
+today_datetime = datetime.datetime.now()  # Use datetime.datetime to avoid conflicts
+expiration_date_parts = [int(part) for part in chosen_expiration_date.split("-")]
+expiration_datetime = datetime.datetime(expiration_date_parts[0], expiration_date_parts[1], expiration_date_parts[2])
+T = (expiration_datetime - today_datetime).days
 
-# Fetch the options data for the chosen expiration date
-options = spx.option_chain(expiration_date)
+# Fetch call option data for the chosen expiration date
+option_chain = ticker.option_chain(chosen_expiration_date)
+call_options = option_chain.calls
 
-# Get the current SPX index price
-current_price = spx.history(period="1d")["Close"].iloc[-1]
-print(f"Current SPX index price: {current_price}")
+print(call_options)
 
-# Retrieve real values for volatility (implied volatility) and strike prices
-vol = options.calls['impliedVolatility'].values  # Array of implied volatilities
-strike_prices = options.calls['strike'].values  # Array of strike prices
-T = (datetime.datetime.strptime(expiration_date, "%Y-%m-%d") - datetime.datetime.now()).days / 365.0  # Time to expiration
+call_option_choice = int(input("Select a call option by number (0, 1, 2, ...): "))
+selected_contract = call_options.iloc[call_option_choice]
 
-# Prompt the user to enter a strike price
-user_strike = float(input("Enter a strike price: "))
+# Extract the chosen call option's attributes
+K = selected_contract['strike']
+last_price = selected_contract['lastPrice']
+vol = selected_contract['impliedVolatility']
+r = risk_free_rate
 
-# Find the contract whose strike price is closest to the user input
-closest_strike_idx = np.argmin(np.abs(strike_prices - user_strike))
-K = strike_prices[closest_strike_idx]
+# Display the gathered parameters
+print(f"Current Index Level (S): {S}")
+print(f"Time to Expiration (T): {T} years")
+print(f"Risk-Free Interest Rate (r): {r}")
+print(f"Volatility (vol): {vol}")
 
-# Get the bid and ask prices for the selected call option
-bid_price = options.calls['bid'].values[closest_strike_idx]
-ask_price = options.calls['ask'].values[closest_strike_idx]
+# Monte Carlo Parameters
+N = 252  # Number of time steps
+M = 10000  # Number of simulations
 
-# Check if the difference between bid and ask price is 0, and if so, use "last price" from Yahoo Finance
-if ask_price - bid_price == 0:
-    print("Bid-Ask price difference is 0. Using 'last price' from Yahoo Finance options.")
-    last_price = options.calls['lastPrice'].values[closest_strike_idx]
-    market_price = last_price
-else:
-    # Calculate the market price as the midpoint between bid and ask
-    market_price = (bid_price + ask_price) / 2.0
-
-print(f"Bid Price: {bid_price}")
-print(f"Ask Price: {ask_price}")
-print(f"Market price of the selected call option (Closest Strike Price: {K}): {market_price}")
-
-# Define the relevant variables from XEO option data
-S = current_price  # Current SPX index price
-r = 0.01  # Risk-free rate (%)
-N = 1  # Number of time steps
-M = 1000000  # Number of simulations
-strike_price = K  # Selected strike price
-
-# Calculate constants
+# Precompute constants
 dt = T / N
 nudt = (r - 0.5 * vol ** 2) * dt
 volsdt = vol * np.sqrt(dt)
@@ -79,24 +82,12 @@ lnSt = np.concatenate((np.full(shape=(1, M), fill_value=lnS), lnSt))
 
 # Compute Expectation and SE
 ST = np.exp(lnSt)
-CT = np.maximum(0, ST - strike_price)
+CT = np.maximum(0, ST - K)
 C0 = np.exp(-r * T) * np.sum(CT[-1]) / M
 sigma = np.sqrt(np.sum((CT[-1] - C0) ** 2) / (M - 1))
 SE = sigma / np.sqrt(M)
-print("Call value is ${0} with SE +/- {1}".format(np.round(C0, 2), np.round(SE, 2)))
 
-# Calculate the total payoff including the difference between market price and call value
-total_payoff = C0 - market_price
-
-# Visualisation of Convergence
-x1 = np.linspace(total_payoff - 3 * SE, total_payoff + 3 * SE, 100)
-s1 = stats.norm.pdf(x1, total_payoff, SE)
-plt.fill_between(x1, s1, color='cornflowerblue', label='Probability Density')
-plt.plot([total_payoff, total_payoff], [0, max(s1) * 1.1], 'k', label='Total Payoff')
-plt.plot([call_values[0], call_values[0]], [0, max(s1) * 1.1], 'r', label='Call Value (Theoretical)')
-plt.plot([market_price, market_price], [0, max(s1) * 1.1], 'k--', label='Market Price')
-plt.xlabel("Value")
-plt.ylabel("Probability")
-plt.title("Convergence of Total Payoff vs. Call Value vs. Market Price")
-plt.legend()
-plt.show()
+# Print the results, including the chosen call option details
+print(f"Chosen Call Option: Strike Price = {K}, Last Price = {last_price}")
+print("Monte Carlo Results:")
+print("Call value is ${0:.2f} with SE +/- {1:.2f}".format(C0, SE))
